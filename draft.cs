@@ -70,13 +70,12 @@ namespace DeidPoC
                 {
                     var fileName = Path.GetFileName(fullfilename);
                     var blobname = Path.GetFileNameWithoutExtension(fullfilename);
-                    // Don't create nested folders - use flat structure with jobId prefix
-                    blobname = $"{jobId}_{blobname}";
+                    blobname = $"{jobId}/{blobname}";
                     allBlobs.Add(new Tuple<string, string>(fullfilename, blobname));
                     await LogMessage($"Prepared for upload: {fileName} -> {blobname}");
                 }
 
-                // Upload files to blob storage with flat structure
+                // Upload files to blob storage
                 await LogMessage("Starting file upload to blob storage...");
                 int uploadCount = 0;
                 foreach (var blobInfo in allBlobs)
@@ -91,11 +90,11 @@ namespace DeidPoC
                 }
                 await LogMessage("All files uploaded successfully");
 
-                // Create DeID job - use input root and output with jobId folder
+                // Create DeID job - input from input/{jobId}, output to output/
                 await LogMessage("Creating deidentification job...");
                 DeidentificationJob job = new(
-                    new SourceStorageLocation(storageAccountContainerUri, "input/"),
-                    new TargetStorageLocation(storageAccountContainerUri, $"output/{jobId}/")
+                    new SourceStorageLocation(storageAccountContainerUri, $"input/{jobId}"),
+                    new TargetStorageLocation(storageAccountContainerUri, "output/")
                 );
 
                 await LogMessage($"Starting deidentification job with ID: {jobId}");
@@ -158,12 +157,12 @@ namespace DeidPoC
                 {
                     await LogMessage("Job succeeded. Starting file download...");
                     
-                    // Download processed files - should now be directly in output/{jobId}/
+                    // Download processed files - service creates output/input/{jobId}/ structure
                     int downloadCount = 0;
                     foreach (var blobInfo in allBlobs)
                     {
-                        // Files should now be directly in output/{jobId}/ without nested input structure
-                        var sourceBlobName = $"output/{jobId}/{blobInfo.Item2}";
+                        // Service preserves input structure: output/input/{jobId}/{filename}
+                        var sourceBlobName = $"output/input/{blobInfo.Item2}";
                         var blobClient = containerClient.GetBlobClient(sourceBlobName);
                         
                         // Create local output file path
@@ -198,11 +197,11 @@ namespace DeidPoC
                             {
                                 await LogMessage($"ERROR: Blob not found: {sourceBlobName}");
                                 
-                                // List files to help debug the actual structure
-                                await LogMessage($"Listing available files in output/{jobId}/...");
+                                // List all files in output/ to debug the actual structure
+                                await LogMessage("Listing all files in output/ folder to debug structure:");
                                 try
                                 {
-                                    await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: $"output/{jobId}/"))
+                                    await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: "output/"))
                                     {
                                         await LogMessage($"Found blob: {blobItem.Name}");
                                     }
