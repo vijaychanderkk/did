@@ -98,16 +98,62 @@ namespace DeidPoC
                 );
 
                 await LogMessage($"Starting deidentification job with ID: {jobId}");
+                
+                // Start the job but don't wait for completion immediately
                 var operation = await client.CreateJobAsync(
-                    WaitUntil.Completed,
+                    WaitUntil.Started, // Changed from Completed to Started
                     jobId,
                     job
                 );
 
-                var completedJob = operation.Value;
-                await LogMessage($"Job completed with status: {completedJob.Status}");
+                await LogMessage($"Job creation request submitted. Polling for status...");
+                
+                // Poll for job completion with timeout
+                var startTime = DateTime.Now;
+                var maxWaitTime = TimeSpan.FromMinutes(15); // 15 minute timeout
+                var pollInterval = TimeSpan.FromSeconds(10); // Check every 10 seconds
+                
+                DeidentificationJob completedJob = null;
+                bool jobCompleted = false;
+                
+                while (!jobCompleted && DateTime.Now - startTime < maxWaitTime)
+                {
+                    try
+                    {
+                        // Get current job status
+                        var currentJob = await client.GetJobAsync(jobId);
+                        completedJob = currentJob.Value;
+                        
+                        await LogMessage($"Job status: {completedJob.Status} (Elapsed: {DateTime.Now - startTime:mm\\:ss})");
+                        
+                        if (completedJob.Status.ToString() == "Succeeded" || 
+                            completedJob.Status.ToString() == "Failed" || 
+                            completedJob.Status.ToString() == "Canceled")
+                        {
+                            jobCompleted = true;
+                            break;
+                        }
+                        
+                        // Wait before next poll
+                        await LogMessage($"Job still running... waiting {pollInterval.TotalSeconds} seconds before next check");
+                        await Task.Delay(pollInterval);
+                    }
+                    catch (Exception ex)
+                    {
+                        await LogMessage($"Error checking job status: {ex.Message}");
+                        await Task.Delay(pollInterval);
+                    }
+                }
+                
+                if (!jobCompleted)
+                {
+                    await LogMessage($"Job timed out after {maxWaitTime.TotalMinutes} minutes. Current status: {completedJob?.Status}");
+                    return;
+                }
+                
+                await LogMessage($"Job completed with final status: {completedJob.Status}");
 
-                if (completedJob.Status == DeidentificationJobStatus.Succeeded)
+                if (completedJob.Status.ToString() == "Succeeded")
                 {
                     await LogMessage("Job succeeded. Starting file download...");
                     
