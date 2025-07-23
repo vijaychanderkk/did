@@ -1,11 +1,10 @@
 import pandas as pd
 import glob
 import os
-from pathlib import Path
 
 def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.csv", other_output="merged_other.csv"):
     """
-    Merge CSV files based on filename patterns.
+    Merge CSV files based on filename patterns, searching recursively in subfolders.
     
     Args:
         directory_path (str): Path to directory containing CSV files
@@ -13,9 +12,9 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
         other_output (str): Output filename for merged other files
     """
     
-    # Get all CSV files in the directory
-    csv_pattern = os.path.join(directory_path, "*.csv")
-    csv_files = glob.glob(csv_pattern)
+    # Get all CSV files recursively in the directory and subfolders
+    csv_pattern = os.path.join(directory_path, "**", "*.csv")
+    csv_files = glob.glob(csv_pattern, recursive=True)
     
     if not csv_files:
         print(f"No CSV files found in {directory_path}")
@@ -50,11 +49,12 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
                 # Read CSV file
                 df = pd.read_csv(file)
                 
-                # Add source filename column
+                # Add source filename and relative path
                 df['source_file'] = os.path.basename(file)
+                df['source_path'] = os.path.relpath(file, directory_path)
                 
                 merged_data.append(df)
-                print(f"  Added {file} ({len(df)} rows)")
+                print(f"  Added {os.path.relpath(file, directory_path)} ({len(df)} rows)")
                 
             except Exception as e:
                 print(f"  Error reading {file}: {e}")
@@ -76,14 +76,16 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
     if truth_files:
         print("\n🔍 Merging truth files:")
         for file in truth_files:
-            print(f"  - {os.path.basename(file)}")
+            rel_path = os.path.relpath(file, directory_path)
+            print(f"  - {rel_path}")
         merge_files(truth_files, truth_output)
     
     # Merge other files
     if other_files:
         print("📄 Merging other files:")
         for file in other_files:
-            print(f"  - {os.path.basename(file)}")
+            rel_path = os.path.relpath(file, directory_path)
+            print(f"  - {rel_path}")
         merge_files(other_files, other_output)
 
 def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive=False):
@@ -96,7 +98,7 @@ def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive
         case_sensitive (bool): Whether pattern matching is case sensitive
     """
     
-    csv_files = glob.glob(os.path.join(directory_path, "*.csv"))
+    csv_files = glob.glob(os.path.join(directory_path, "**", "*.csv"), recursive=True)
     
     if not csv_files:
         print(f"No CSV files found in {directory_path}")
@@ -154,24 +156,13 @@ def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive
     merge_with_metadata(other_files, other_output)
 
 if __name__ == "__main__":
-    # Example usage
-    
-    # Basic usage - merge files in current directory
-    print("=== Basic CSV Merger ===")
+    # Basic usage - merge files in current directory and all subfolders
+    print("=== CSV Merger with Subfolder Support ===")
     merge_csv_files_by_pattern()
     
-    # Advanced usage with custom parameters
-    print("\n=== Advanced CSV Merger ===")
-    # merge_csv_advanced(
-    #     directory_path="./data",
-    #     truth_pattern="ground_truth",
-    #     case_sensitive=False
-    # )
-    
-    # Custom directory and output names
-    print("\n=== Custom Directory Example ===")
+    # Example with custom directory
     # merge_csv_files_by_pattern(
-    #     directory_path="./csv_files",
+    #     directory_path="./data",
     #     truth_output="all_truth_data.csv",
     #     other_output="all_regular_data.csv"
     # )
