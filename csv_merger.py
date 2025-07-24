@@ -2,25 +2,42 @@ import pandas as pd
 import glob
 import os
 
-def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.csv", other_output="merged_other.csv"):
+def merge_csv_files_by_pattern(directory_path=".", subfolders=None, truth_output="merged_truth.csv", other_output="merged_other.csv", add_metadata=False):
     """
-    Merge CSV files based on filename patterns, searching recursively in subfolders.
+    Merge CSV files based on filename patterns, searching in specific subfolders.
     
     Args:
         directory_path (str): Path to directory containing CSV files
+        subfolders (list): List of subfolder names to process. If None, processes all subfolders
         truth_output (str): Output filename for merged truth files
         other_output (str): Output filename for merged other files
+        add_metadata (bool): Whether to add source_file and source_path columns
     """
     
-    # Get all CSV files recursively in the directory and subfolders
-    csv_pattern = os.path.join(directory_path, "**", "*.csv")
-    csv_files = glob.glob(csv_pattern, recursive=True)
+    # Get CSV files from specific subfolders or all subfolders
+    csv_files = []
+    
+    if subfolders is None:
+        # Process all subfolders (original behavior)
+        csv_pattern = os.path.join(directory_path, "**", "*.csv")
+        csv_files = glob.glob(csv_pattern, recursive=True)
+    else:
+        # Process only specified subfolders
+        for subfolder in subfolders:
+            subfolder_path = os.path.join(directory_path, subfolder)
+            if os.path.exists(subfolder_path):
+                csv_pattern = os.path.join(subfolder_path, "**", "*.csv")
+                folder_files = glob.glob(csv_pattern, recursive=True)
+                csv_files.extend(folder_files)
+                print(f"Found {len(folder_files)} CSV files in '{subfolder}' folder")
+            else:
+                print(f"Warning: Subfolder '{subfolder}' not found in {directory_path}")
     
     if not csv_files:
-        print(f"No CSV files found in {directory_path}")
+        print(f"No CSV files found in specified locations")
         return
     
-    print(f"Found {len(csv_files)} CSV files")
+    print(f"Total CSV files found: {len(csv_files)}")
     
     # Separate files based on pattern
     truth_files = []
@@ -36,7 +53,7 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
     print(f"Truth files: {len(truth_files)}")
     print(f"Other files: {len(other_files)}")
     
-    # Function to merge files and add source column
+    # Function to merge files
     def merge_files(file_list, output_filename):
         if not file_list:
             print(f"No files to merge for {output_filename}")
@@ -49,9 +66,14 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
                 # Read CSV file
                 df = pd.read_csv(file)
                 
-                # Add source filename and relative path
-                df['source_file'] = os.path.basename(file)
-                df['source_path'] = os.path.relpath(file, directory_path)
+                # Filter out metadata columns if they exist (from previous merges)
+                metadata_columns = ['source_file', 'source_path', 'file_size', 'merge_timestamp']
+                df = df.drop(columns=[col for col in metadata_columns if col in df.columns])
+                
+                # Add metadata columns only if requested
+                if add_metadata:
+                    df['source_file'] = os.path.basename(file)
+                    df['source_path'] = os.path.relpath(file, directory_path)
                 
                 merged_data.append(df)
                 print(f"  Added {os.path.relpath(file, directory_path)} ({len(df)} rows)")
@@ -88,20 +110,33 @@ def merge_csv_files_by_pattern(directory_path=".", truth_output="merged_truth.cs
             print(f"  - {rel_path}")
         merge_files(other_files, other_output)
 
-def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive=False):
+def merge_csv_advanced(directory_path=".", subfolders=None, truth_pattern="truth", case_sensitive=False, add_metadata=True):
     """
-    Advanced version with more customization options.
+    Advanced version with more customization options and subfolder selection.
     
     Args:
         directory_path (str): Path to directory containing CSV files
+        subfolders (list): List of subfolder names to process
         truth_pattern (str): Pattern to identify truth files
         case_sensitive (bool): Whether pattern matching is case sensitive
+        add_metadata (bool): Whether to add metadata columns
     """
     
-    csv_files = glob.glob(os.path.join(directory_path, "**", "*.csv"), recursive=True)
+    # Get CSV files from specific subfolders
+    csv_files = []
+    
+    if subfolders is None:
+        csv_files = glob.glob(os.path.join(directory_path, "**", "*.csv"), recursive=True)
+    else:
+        for subfolder in subfolders:
+            subfolder_path = os.path.join(directory_path, subfolder)
+            if os.path.exists(subfolder_path):
+                csv_pattern = os.path.join(subfolder_path, "**", "*.csv")
+                folder_files = glob.glob(csv_pattern, recursive=True)
+                csv_files.extend(folder_files)
     
     if not csv_files:
-        print(f"No CSV files found in {directory_path}")
+        print(f"No CSV files found in specified locations")
         return
     
     truth_files = []
@@ -135,10 +170,15 @@ def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive
             try:
                 df = pd.read_csv(file)
                 
-                # Add metadata columns
-                df['source_file'] = os.path.basename(file)
-                df['file_size'] = os.path.getsize(file)
-                df['merge_timestamp'] = datetime.now().isoformat()
+                # Filter out existing metadata columns
+                metadata_columns = ['source_file', 'source_path', 'file_size', 'merge_timestamp']
+                df = df.drop(columns=[col for col in metadata_columns if col in df.columns])
+                
+                # Add metadata columns only if requested
+                if add_metadata:
+                    df['source_file'] = os.path.basename(file)
+                    df['file_size'] = os.path.getsize(file)
+                    df['merge_timestamp'] = datetime.now().isoformat()
                 
                 merged_data.append(df)
                 
@@ -156,13 +196,31 @@ def merge_csv_advanced(directory_path=".", truth_pattern="truth", case_sensitive
     merge_with_metadata(other_files, other_output)
 
 if __name__ == "__main__":
-    # Basic usage - merge files in current directory and all subfolders
-    print("=== CSV Merger with Subfolder Support ===")
-    merge_csv_files_by_pattern()
+    # Example 1: Process only specific subfolders without metadata
+    print("=== CSV Merger with Specific Folders ===")
+    merge_csv_files_by_pattern(
+        directory_path=".",
+        subfolders=["data", "results", "backup"],  # Only process these folders
+        add_metadata=False  # Don't add source columns
+    )
     
-    # Example with custom directory
-    # merge_csv_files_by_pattern(
-    #     directory_path="./data",
-    #     truth_output="all_truth_data.csv",
-    #     other_output="all_regular_data.csv"
-    # )
+    print("\n" + "="*50)
+    
+    # Example 2: Process all subfolders with metadata
+    print("=== CSV Merger for All Folders with Metadata ===")
+    merge_csv_files_by_pattern(
+        directory_path=".",
+        subfolders=None,  # Process all subfolders
+        add_metadata=True  # Add source columns
+    )
+    
+    print("\n" + "="*50)
+    
+    # Example 3: Advanced merge with specific folders
+    print("=== Advanced CSV Merger ===")
+    merge_csv_advanced(
+        directory_path="./my_data",
+        subfolders=["experiment1", "experiment2"],
+        truth_pattern="ground_truth",
+        add_metadata=False
+    )
