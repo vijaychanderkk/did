@@ -1,0 +1,58 @@
+Using Azure CLI with Folder Path
+bash# If you know the specific folder path
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --prefix "path/to/your/folder/" \
+  --query "length([?ends_with(name, 'text1.csv')])" \
+  --output tsv
+
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --prefix "path/to/your/folder/" \
+  --query "length([?ends_with(name, 'text2.csv')])" \
+  --output tsv
+Search Recursively Across All Folders
+bash# Search entire container recursively (no prefix)
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --query "length([?ends_with(name, 'text1.csv')])" \
+  --output tsv
+
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --query "length([?ends_with(name, 'text2.csv')])" \
+  --output tsv
+Using Azure CLI with Wildcard Pattern
+bash# List all blobs matching pattern, then count
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --query "[?ends_with(name, 'text1.csv')].name" \
+  --output tsv | wc -l
+
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --query "[?ends_with(name, 'text2.csv')].name" \
+  --output tsv | wc -l
+If You Want to See the File Paths Too
+bash# Show the files and count them
+echo "Files ending with text1.csv:"
+az storage blob list \
+  --container-name YOUR_CONTAINER_NAME \
+  --account-name YOUR_STORAGE_ACCOUNT_NAME \
+  --query "[?ends_with(name, 'text1.csv')].name" \
+  --output tsv
+
+echo "Count: $(az storage blob list --container-name YOUR_CONTAINER_NAME --account-name YOUR_STORAGE_ACCOUNT_NAME --query "length([?ends_with(name, 'text1.csv')])" --output tsv)"
+Using azcopy (Alternative)
+bash# List files matching pattern
+azcopy list "https://YOUR_STORAGE_ACCOUNT.blob.core.windows.net/YOUR_CONTAINER_NAME" \
+  --recursive | grep "text1.csv$" | wc -l
+
+azcopy list "https://YOUR_STORAGE_ACCOUNT.blob.core.windows.net/YOUR_CONTAINER_NAME" \
+  --recursive | grep "text2.csv$" | wc -l
