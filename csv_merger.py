@@ -4,6 +4,8 @@ from io import StringIO
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential, AzureCliCredential, ManagedIdentityCredential
 from typing import List, Optional
+import logging
+from datetime import datetime
 
 def merge_csv_files_by_pattern(
     container_name: str,
@@ -18,7 +20,8 @@ def merge_csv_files_by_pattern(
     truth_output: str = "merged_truth.csv",
     other_output: str = "merged_other.csv",
     add_metadata: bool = False,
-    truth_pattern: str = "truth"
+    truth_pattern: str = "truth",
+    log_file: str = None
 ):
     """
     Merge CSV files from Azure Blob Storage based on filename patterns.
@@ -37,7 +40,33 @@ def merge_csv_files_by_pattern(
         other_output (str): Output filename for merged other files
         add_metadata (bool): Whether to add source_file and source_path columns
         truth_pattern (str): Pattern to identify truth files (case insensitive)
+        log_file (str): Log file name. If None, creates auto-named log file
     """
+    
+    # Setup logging
+    if log_file is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = f"csv_merge_log_{timestamp}.txt"
+    
+    # Configure logging to write to both file and console
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, mode='w'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== CSV Merger Log Started ===")
+    logger.info(f"Container: {container_name}")
+    logger.info(f"Base Path: '{base_path}'")
+    logger.info(f"Subfolders: {subfolders}")
+    logger.info(f"Include Root: {include_root}")
+    logger.info(f"Truth Pattern: '{truth_pattern}'")
+    logger.info(f"Log File: {log_file}")
+    logger.info("")
     
     # Initialize blob service client
     if use_azure_ad:
@@ -57,19 +86,21 @@ def merge_csv_files_by_pattern(
             # 5. Azure PowerShell
             azure_credential = DefaultAzureCredential()
             blob_service_client = BlobServiceClient(account_url=account_url, credential=azure_credential)
-            print("✅ Using Azure AD authentication (DefaultAzureCredential)")
+            logger.info("✅ Using Azure AD authentication (DefaultAzureCredential)")
         except Exception as e:
-            print(f"Azure AD auth failed: {e}")
-            print("Make sure you're logged in with 'az login' or running in an environment with managed identity")
+            logger.error(f"Azure AD auth failed: {e}")
+            logger.error("Make sure you're logged in with 'az login' or running in an environment with managed identity")
             return
     elif connection_string:
         blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-        print("✅ Using connection string authentication")
+        logger.info("✅ Using connection string authentication")
     elif account_url and credential:
         blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
-        print("✅ Using SAS token/account key authentication")
+        logger.info("✅ Using SAS token/account key authentication")
     else:
-        raise ValueError("Authentication method required: use_azure_ad=True with storage_account_name, or provide connection_string, or (account_url + credential)")
+        error_msg = "Authentication method required: use_azure_ad=True with storage_account_name, or provide connection_string, or (account_url + credential)"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     
     # Get container client
     container_client = blob_service_client.get_container_client(container_name)
@@ -79,9 +110,9 @@ def merge_csv_files_by_pattern(
         base_path = base_path.strip('/')
         if base_path:
             base_path = base_path + '/'
-        print(f"Focusing on base path: '{base_path}' in container '{container_name}'")
+        logger.info(f"Focusing on base path: '{base_path}' in container '{container_name}'")
     else:
-        print(f"Processing entire container '{container_name}'")
+        logger.info(f"Processing entire container '{container_name}'")
     
     # List blobs with prefix filter
     try:
@@ -91,9 +122,9 @@ def merge_csv_files_by_pattern(
             all_blobs = list(container_client.list_blobs())
         
         csv_blobs = [blob for blob in all_blobs if blob.name.lower().endswith('.csv')]
-        print(f"Found {len(csv_blobs)} CSV files in specified path")
+        logger.info(f"Found {len(csv_blobs)} CSV files in specified path")
     except Exception as e:
-        print(f"Error accessing container: {e}")
+        logger.error(f"Error accessing container: {e}")
         return
     
     # Filter blobs based on subfolders within base_path
@@ -146,14 +177,17 @@ def merge_csv_files_by_pattern(
     print(f"Other files: {len(other_blobs)}")
     
     # Function to merge blobs
-    def merge_blobs(blob_list, output_filename):
+    def merge_blobs(blob_list, output_filename, file_type=""):
         if not blob_list:
-            print(f"No files to merge for {output_filename}")
+            logger.info(f"No {file_type} files to merge for {output_filename}")
             return
         
+        logger.info(f"=== Merging {file_type} Files ===")
         merged_data = []
+        successful_files = []
+        failed_files = []
         
-        for blob in blob_list:
+        for i, blob in enumerate(blob_list, 1):
             try:
                 # Download blob content
                 blob_client = container_client.get_blob_client(blob.name)
@@ -173,10 +207,12 @@ def merge_csv_files_by_pattern(
                     df['container_name'] = container_name
                 
                 merged_data.append(df)
-                print(f"  Added {blob.name} ({len(df)} rows)")
+                successful_files.append(blob.name)
+                logger.info(f"  [{i}/{len(blob_list)}] ✅ Added {blob.name} ({len(df)} rows)")
                 
             except Exception as e:
-                print(f"  Error reading {blob.name}: {e}")
+                failed_files.append((blob.name, str(e)))
+                logger.error(f"  [{i}/{len(blob_list)}] ❌ Error reading {blob.name}: {e}")
         
         if merged_data:
             # Concatenate all dataframes
@@ -185,25 +221,52 @@ def merge_csv_files_by_pattern(
             # Save merged file locally
             final_df.to_csv(output_filename, index=False)
             
-            print(f"✅ Merged {len(blob_list)} files into {output_filename}")
-            print(f"   Total rows: {len(final_df)}")
-            print(f"   Columns: {list(final_df.columns)}")
-            print()
+            logger.info(f"")
+            logger.info(f"✅ SUCCESS: Merged {len(successful_files)} {file_type} files into {output_filename}")
+            logger.info(f"   Total rows: {len(final_df):,}")
+            logger.info(f"   Columns: {list(final_df.columns)}")
             
+            # Log detailed file list
+            logger.info(f"")
+            logger.info(f"=== Files Successfully Merged into {output_filename} ===")
+            for i, file_path in enumerate(successful_files, 1):
+                file_size = merged_data[i-1].shape[0]  # Number of rows
+                logger.info(f"  {i:2d}. {file_path} ({file_size:,} rows)")
+            
+            if failed_files:
+                logger.info(f"")
+                logger.warning(f"=== Failed Files for {output_filename} ===")
+                for i, (file_path, error) in enumerate(failed_files, 1):
+                    logger.warning(f"  {i:2d}. {file_path} - Error: {error}")
+            
+            logger.info("")
             return final_df
+        else:
+            logger.error(f"❌ FAILED: No {file_type} files could be processed for {output_filename}")
+            return None
     
-    # Show files to be processed
+    # Show files to be processed and merge them
     if truth_blobs:
-        print("\n🔍 Truth files to merge:")
-        for blob in truth_blobs:
-            print(f"  - {blob.name}")
-        merge_blobs(truth_blobs, truth_output)
+        logger.info("🔍 Truth files to be processed:")
+        for i, blob in enumerate(truth_blobs, 1):
+            logger.info(f"  {i:2d}. {blob.name}")
+        logger.info("")
+        merge_blobs(truth_blobs, truth_output, "truth")
     
     if other_blobs:
-        print("📄 Other files to merge:")
-        for blob in other_blobs:
-            print(f"  - {blob.name}")
-        merge_blobs(other_blobs, other_output)
+        logger.info("📄 Other files to be processed:")
+        for i, blob in enumerate(other_blobs, 1):
+            logger.info(f"  {i:2d}. {blob.name}")
+        logger.info("")
+        merge_blobs(other_blobs, other_output, "other")
+    
+    logger.info("=== CSV Merger Log Completed ===")
+    logger.info(f"Log saved to: {log_file}")
+    
+    # Close logging handlers to ensure file is written
+    for handler in logger.handlers[:]:
+        handler.close()
+        logger.removeHandler(handler)
 
 def merge_csv_with_azure_ad(
     container_name: str,
@@ -211,6 +274,7 @@ def merge_csv_with_azure_ad(
     base_path: str = "",
     subfolders: Optional[List[str]] = None,
     include_root: bool = True,
+    log_file: str = None,
     **kwargs
 ):
     """
@@ -222,6 +286,7 @@ def merge_csv_with_azure_ad(
         base_path (str): Base folder path within container (e.g., "output")
         subfolders (list): List of subfolder names under base_path to process
         include_root (bool): Whether to include files directly in base_path root
+        log_file (str): Log file name. If None, creates auto-named log file
         **kwargs: Additional arguments passed to merge_csv_files_by_pattern
     """
     
@@ -232,6 +297,7 @@ def merge_csv_with_azure_ad(
         base_path=base_path,
         subfolders=subfolders,
         include_root=include_root,
+        log_file=log_file,
         **kwargs
     )
 
@@ -239,6 +305,7 @@ def merge_csv_from_url(
     azure_url: str,
     subfolders: Optional[List[str]] = None,
     include_root: bool = True,
+    log_file: str = None,
     **kwargs
 ):
     """
@@ -248,12 +315,14 @@ def merge_csv_from_url(
         azure_url (str): Full Azure blob URL like "https://storage.blob.core.windows.net/container/path/"
         subfolders (list): List of subfolder names to process
         include_root (bool): Whether to include files directly in the path
+        log_file (str): Log file name. If None, creates auto-named log file
         **kwargs: Additional arguments passed to merge_csv_files_by_pattern
     
     Example:
         merge_csv_from_url(
             "https://storage.blob.core.windows.net/deidlob/output/",
-            subfolders=["exp1", "exp2"]
+            subfolders=["exp1", "exp2"],
+            log_file="my_merge_log.txt"
         )
     """
     import urllib.parse
@@ -282,12 +351,13 @@ def merge_csv_from_url(
         base_path=base_path,
         subfolders=subfolders,
         include_root=include_root,
+        log_file=log_file,
         **kwargs
     )
 
 if __name__ == "__main__":
-    # Example 1: Using your specific Azure URL
-    print("=== CSV Merger from Azure URL ===")
+    # Example 1: Using your specific Azure URL with custom log file
+    print("=== CSV Merger from Azure URL with Logging ===")
     
     # Your Azure URL
     AZURE_URL = "https://storage.blob.core.windows.net/deidlob/output/"
@@ -297,13 +367,14 @@ if __name__ == "__main__":
         subfolders=["exp1", "exp2", "results"],  # Process these subfolders under /output/
         include_root=True,  # Also include files directly in /output/
         add_metadata=False,
-        truth_pattern="truth"
+        truth_pattern="truth",
+        log_file="output_merge_log.txt"  # Custom log file name
     )
     
     print("\n" + "="*50)
     
-    # Example 2: Process ALL subfolders under /output/
-    print("=== Process All Subfolders in Output ===")
+    # Example 2: Process ALL subfolders with auto-generated log file
+    print("=== Process All Subfolders in Output (Auto Log) ===")
     
     merge_csv_from_url(
         azure_url="https://storage.blob.core.windows.net/deidlob/output/",
@@ -311,13 +382,14 @@ if __name__ == "__main__":
         include_root=True,
         add_metadata=True,
         truth_output="all_truth_from_output.csv",
-        other_output="all_other_from_output.csv"
+        other_output="all_other_from_output.csv",
+        log_file=None  # Auto-generate log file name with timestamp
     )
     
     print("\n" + "="*50)
     
-    # Example 3: Manual specification (alternative approach)
-    print("=== Manual Container and Path Specification ===")
+    # Example 3: Manual specification with detailed logging
+    print("=== Manual Container and Path with Detailed Logging ===")
     
     merge_csv_with_azure_ad(
         container_name="deidlob",
@@ -325,18 +397,6 @@ if __name__ == "__main__":
         base_path="output",  # Focus on the 'output' folder
         subfolders=["subfolder1", "subfolder2"],  # Specific subfolders under output/
         include_root=False,  # Don't include files directly in output/ root
-        add_metadata=False
-    )
-    
-    print("\n" + "="*50)
-    
-    # Example 4: Just files directly in /output/ (no subfolders)
-    print("=== Only Files in Output Root ===")
-    
-    merge_csv_from_url(
-        azure_url="https://storage.blob.core.windows.net/deidlob/output/",
-        subfolders=[],  # Empty list = no subfolders
-        include_root=True,  # Only files directly in /output/
-        truth_output="output_root_truth.csv",
-        other_output="output_root_other.csv"
+        add_metadata=True,  # Include metadata for tracking
+        log_file="detailed_merge_log.txt"
     )
