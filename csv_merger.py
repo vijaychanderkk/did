@@ -21,7 +21,10 @@ def merge_csv_files_by_pattern(
     other_output: str = "merged_other.csv",
     add_metadata: bool = False,
     truth_pattern: str = "truth",
-    log_file: str = None
+    log_file: str = None,
+    upload_to_azure: bool = False,
+    upload_container: str = None,
+    upload_path: str = ""
 ):
     """
     Merge CSV files from Azure Blob Storage based on filename patterns.
@@ -41,6 +44,9 @@ def merge_csv_files_by_pattern(
         add_metadata (bool): Whether to add source_file and source_path columns
         truth_pattern (str): Pattern to identify truth files (case insensitive)
         log_file (str): Log file name. If None, creates auto-named log file
+        upload_to_azure (bool): Whether to upload merged files back to Azure
+        upload_container (str): Container name for uploading merged files. If None, uses same as source container
+        upload_path (str): Path within upload container where files should be stored
     """
     
     # Setup logging
@@ -65,6 +71,11 @@ def merge_csv_files_by_pattern(
     logger.info(f"Subfolders: {subfolders}")
     logger.info(f"Include Root: {include_root}")
     logger.info(f"Truth Pattern: '{truth_pattern}'")
+    logger.info(f"Upload to Azure: {upload_to_azure}")
+    if upload_to_azure:
+        upload_container_name = upload_container or container_name
+        logger.info(f"Upload Container: {upload_container_name}")
+        logger.info(f"Upload Path: '{upload_path}'")
     logger.info(f"Log File: {log_file}")
     logger.info("")
     
@@ -176,6 +187,33 @@ def merge_csv_files_by_pattern(
     print(f"Truth files: {len(truth_blobs)}")
     print(f"Other files: {len(other_blobs)}")
     
+    # Function to upload file to Azure
+    def upload_to_azure_blob(local_filename, blob_path):
+        try:
+            upload_container_name = upload_container or container_name
+            upload_container_client = blob_service_client.get_container_client(upload_container_name)
+            
+            # Ensure upload path ends with / if it's not empty
+            if upload_path and not upload_path.endswith('/'):
+                full_blob_path = f"{upload_path}/{blob_path}"
+            elif upload_path:
+                full_blob_path = f"{upload_path}{blob_path}"
+            else:
+                full_blob_path = blob_path
+            
+            with open(local_filename, 'rb') as data:
+                upload_container_client.upload_blob(
+                    name=full_blob_path, 
+                    data=data, 
+                    overwrite=True
+                )
+            
+            logger.info(f"✅ Uploaded {local_filename} to {upload_container_name}/{full_blob_path}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to upload {local_filename}: {e}")
+            return False
+    
     # Function to merge blobs
     def merge_blobs(blob_list, output_filename, file_type=""):
         if not blob_list:
@@ -218,8 +256,15 @@ def merge_csv_files_by_pattern(
             # Concatenate all dataframes
             final_df = pd.concat(merged_data, ignore_index=True)
             
-            # Save merged file locally
+            # Save merged file locally first
             final_df.to_csv(output_filename, index=False)
+            logger.info(f"💾 Saved locally: {output_filename}")
+            
+            # Upload to Azure if requested
+            if upload_to_azure:
+                upload_success = upload_to_azure_blob(output_filename, output_filename)
+                if not upload_success:
+                    logger.warning(f"⚠️  Local file {output_filename} saved but Azure upload failed")
             
             logger.info(f"")
             logger.info(f"✅ SUCCESS: Merged {len(successful_files)} {file_type} files into {output_filename}")
@@ -275,6 +320,9 @@ def merge_csv_with_azure_ad(
     subfolders: Optional[List[str]] = None,
     include_root: bool = True,
     log_file: str = None,
+    upload_to_azure: bool = False,
+    upload_container: str = None,
+    upload_path: str = "",
     **kwargs
 ):
     """
@@ -287,6 +335,9 @@ def merge_csv_with_azure_ad(
         subfolders (list): List of subfolder names under base_path to process
         include_root (bool): Whether to include files directly in base_path root
         log_file (str): Log file name. If None, creates auto-named log file
+        upload_to_azure (bool): Whether to upload merged files back to Azure
+        upload_container (str): Container name for uploading merged files
+        upload_path (str): Path within upload container where files should be stored
         **kwargs: Additional arguments passed to merge_csv_files_by_pattern
     """
     
@@ -298,6 +349,9 @@ def merge_csv_with_azure_ad(
         subfolders=subfolders,
         include_root=include_root,
         log_file=log_file,
+        upload_to_azure=upload_to_azure,
+        upload_container=upload_container,
+        upload_path=upload_path,
         **kwargs
     )
 
@@ -306,6 +360,9 @@ def merge_csv_from_url(
     subfolders: Optional[List[str]] = None,
     include_root: bool = True,
     log_file: str = None,
+    upload_to_azure: bool = False,
+    upload_container: str = None,
+    upload_path: str = "",
     **kwargs
 ):
     """
@@ -316,13 +373,18 @@ def merge_csv_from_url(
         subfolders (list): List of subfolder names to process
         include_root (bool): Whether to include files directly in the path
         log_file (str): Log file name. If None, creates auto-named log file
+        upload_to_azure (bool): Whether to upload merged files back to Azure
+        upload_container (str): Container name for uploading merged files
+        upload_path (str): Path within upload container where files should be stored
         **kwargs: Additional arguments passed to merge_csv_files_by_pattern
     
     Example:
         merge_csv_from_url(
             "https://storage.blob.core.windows.net/deidlob/output/",
             subfolders=["exp1", "exp2"],
-            log_file="my_merge_log.txt"
+            upload_to_azure=True,
+            upload_container="deidlob",
+            upload_path="output-merged"
         )
     """
     import urllib.parse
@@ -352,51 +414,106 @@ def merge_csv_from_url(
         subfolders=subfolders,
         include_root=include_root,
         log_file=log_file,
+        upload_to_azure=upload_to_azure,
+        upload_container=upload_container,
+        upload_path=upload_path,
+        **kwargs
+    )
+
+def merge_and_upload_to_output_merged(
+    source_url: str,
+    subfolders: Optional[List[str]] = None,
+    include_root: bool = True,
+    **kwargs
+):
+    """
+    Convenience function specifically for your use case: merge from /output/ and upload to /output-merged/
+    
+    Args:
+        source_url (str): Source Azure URL (e.g., "https://storage.blob.core.windows.net/deidlob/output/")
+        subfolders (list): List of subfolder names to process
+        include_root (bool): Whether to include files directly in the source path
+        **kwargs: Additional arguments passed to merge_csv_from_url
+    
+    Example:
+        merge_and_upload_to_output_merged(
+            "https://storage.blob.core.windows.net/deidlob/output/",
+            subfolders=["exp1", "exp2"]
+        )
+    """
+    import urllib.parse
+    
+    # Parse the source URL to extract container name
+    parsed = urllib.parse.urlparse(source_url)
+    path_parts = parsed.path.strip('/').split('/', 1)
+    container_name = path_parts[0]
+    
+    merge_csv_from_url(
+        azure_url=source_url,
+        subfolders=subfolders,
+        include_root=include_root,
+        upload_to_azure=True,
+        upload_container=container_name,  # Same container
+        upload_path="output-merged",  # Upload to output-merged folder
         **kwargs
     )
 
 if __name__ == "__main__":
-    # Example 1: Using your specific Azure URL with custom log file
-    print("=== CSV Merger from Azure URL with Logging ===")
+    # Example 1: Your specific use case - merge from /output/ and upload to /output-merged/
+    print("=== Merge from Output and Upload to Output-Merged ===")
     
-    # Your Azure URL
-    AZURE_URL = "https://storage.blob.core.windows.net/deidlob/output/"
-    
-    merge_csv_from_url(
-        azure_url=AZURE_URL,
-        subfolders=["exp1", "exp2", "results"],  # Process these subfolders under /output/
+    merge_and_upload_to_output_merged(
+        source_url="https://storage.blob.core.windows.net/deidlob/output/",
+        subfolders=["exp1", "exp2", "results"],  # Process these subfolders
         include_root=True,  # Also include files directly in /output/
         add_metadata=False,
         truth_pattern="truth",
-        log_file="output_merge_log.txt"  # Custom log file name
+        log_file="output_to_merged_log.txt"
     )
     
     print("\n" + "="*50)
     
-    # Example 2: Process ALL subfolders with auto-generated log file
-    print("=== Process All Subfolders in Output (Auto Log) ===")
+    # Example 2: Manual approach with full control
+    print("=== Manual Upload Configuration ===")
     
     merge_csv_from_url(
         azure_url="https://storage.blob.core.windows.net/deidlob/output/",
         subfolders=None,  # Process ALL subfolders under /output/
         include_root=True,
+        upload_to_azure=True,
+        upload_container="deidlob",  # Same container
+        upload_path="output-merged",  # Upload to this folder
         add_metadata=True,
-        truth_output="all_truth_from_output.csv",
-        other_output="all_other_from_output.csv",
-        log_file=None  # Auto-generate log file name with timestamp
+        truth_output="all_truth_merged.csv",
+        other_output="all_other_merged.csv",
+        log_file="manual_upload_log.txt"
     )
     
     print("\n" + "="*50)
     
-    # Example 3: Manual specification with detailed logging
-    print("=== Manual Container and Path with Detailed Logging ===")
+    # Example 3: Local only (no upload) - original behavior
+    print("=== Local Files Only (No Upload) ===")
     
-    merge_csv_with_azure_ad(
-        container_name="deidlob",
-        storage_account_name="storage",  # From your URL
-        base_path="output",  # Focus on the 'output' folder
-        subfolders=["subfolder1", "subfolder2"],  # Specific subfolders under output/
-        include_root=False,  # Don't include files directly in output/ root
-        add_metadata=True,  # Include metadata for tracking
-        log_file="detailed_merge_log.txt"
+    merge_csv_from_url(
+        azure_url="https://storage.blob.core.windows.net/deidlob/output/",
+        subfolders=["experiment1", "experiment2"],
+        include_root=False,
+        upload_to_azure=False,  # Keep files local only
+        add_metadata=False,
+        log_file="local_only_log.txt"
+    )
+    
+    print("\n" + "="*50)
+    
+    # Example 4: Upload to a different container/path
+    print("=== Upload to Different Location ===")
+    
+    merge_csv_from_url(
+        azure_url="https://storage.blob.core.windows.net/deidlob/output/",
+        subfolders=["special_data"],
+        upload_to_azure=True,
+        upload_container="deidlob",  # Could be different container
+        upload_path="processed/merged_files",  # Different path structure
+        truth_output="special_truth.csv",
+        other_output="special_other.csv"
     )
