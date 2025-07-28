@@ -1,0 +1,35 @@
+Remove Files
+bash
+rm filename                    # Remove a single file
+rm file1 file2 file3          # Remove multiple files
+rm *.txt                      # Remove all .txt files
+rm -i filename                # Remove with confirmation prompt
+rm -f filename                # Force remove (no prompts, ignore nonexistent files)
+
+Remove Directories
+bash
+rmdir dirname                 # Remove empty directory only
+rm -r dirname                 # Remove directory and all contents recursively
+rm -rf dirname                # Force remove directory and contents (no prompts)
+rm -ri dirname                # Remove recursively with confirmation for each file
+
+Remove Everything in Current Directory
+bashrm -rf *                      # Remove all files and folders (DANGEROUS!)
+rm -rf .[^.]*                 # Remove all hidden files/folders
+rm -rf * .[^.]*               # Remove everything including hidden files
+
+Safety Tips
+Always double-check your path before using rm -rf
+Use ls first to see what you're about to delete
+Consider using rm -i for interactive confirmation
+The -f flag bypasses most safety prompts, so use carefully
+There's no "trash" - deleted files are gone permanently
+
+Examples
+bash
+rm document.txt               # Remove single file
+rm -r old_project/           # Remove directory and contents
+rm -f *.log                  # Force remove all log files
+rm -rf /tmp/temp_folder/     # Remove temporary folder completely
+
+Warning: Be extremely careful with rm -rf especially with wildcards or as root user, as it can permanently delete important system files.
