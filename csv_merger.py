@@ -55,13 +55,21 @@ def merge_csv_files_by_pattern(
         log_file = f"csv_merge_log_{timestamp}.txt"
     
     # Configure logging to write to both file and console
+    # Suppress Azure SDK verbose logging
+    logging.getLogger("azure").setLevel(logging.WARNING)
+    logging.getLogger("azure.core").setLevel(logging.WARNING)
+    logging.getLogger("azure.storage").setLevel(logging.WARNING)
+    logging.getLogger("azure.identity").setLevel(logging.WARNING)
+    
+    # Configure our application logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file, mode='w'),
             logging.StreamHandler()
-        ]
+        ],
+        force=True  # Override any existing logging configuration
     )
     
     logger = logging.getLogger(__name__)
