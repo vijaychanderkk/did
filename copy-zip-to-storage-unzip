@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Azure CLI script to upload and extract zip files to blob storage
+# Make sure you're logged in: az login
+
+# Configuration
+STORAGE_ACCOUNT="your_storage_account_name"
+CONTAINER_NAME="your_container_name"
+ZIP_FILE_PATH="/path/to/your/zipfile.zip"
+TEMP_EXTRACT_DIR="/tmp/extracted_files"
+
+# Function to upload and extract zip file
+upload_and_extract_zip() {
+    local zip_file=$1
+    local container=$2
+    local storage_account=$3
+    
+    echo "Processing zip file: $zip_file"
+    
+    # Create temporary directory for extraction
+    mkdir -p "$TEMP_EXTRACT_DIR"
+    
+    # Extract zip file
+    echo "Extracting zip file..."
+    unzip -q "$zip_file" -d "$TEMP_EXTRACT_DIR"
+    
+    # Get zip filename without extension for folder structure
+    zip_basename=$(basename "$zip_file" .zip)
+    
+    # Upload extracted files to blob storage
+    echo "Uploading files to blob storage..."
+    az storage blob upload-batch \
+        --destination "$container" \
+        --source "$TEMP_EXTRACT_DIR" \
+        --destination-path "$zip_basename" \
+        --account-name "$storage_account" \
+        --auth-mode login
+    
+    # Clean up temporary directory
+    rm -rf "$TEMP_EXTRACT_DIR"
+    
+    echo "Successfully uploaded and extracted: $zip_file"
+}
+
+# Create container if it doesn't exist
+echo "Creating container if it doesn't exist..."
+az storage container create \
+    --name "$CONTAINER_NAME" \
+    --account-name "$STORAGE_ACCOUNT" \
+    --auth-mode login
+
+# Process single zip file
+upload_and_extract_zip "$ZIP_FILE_PATH" "$CONTAINER_NAME" "$STORAGE_ACCOUNT"
+
+echo "Script completed successfully"
