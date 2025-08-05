@@ -32,12 +32,24 @@ upload_and_extract_zip() {
         # Get zip filename without extension for folder structure
         zip_basename=$(basename "$zip_file" .zip)
         
+        # Check if extraction created a single root folder with same name as zip
+        local extracted_items=($(ls -1 "$temp_dir"))
+        local upload_source="$temp_dir"
+        local destination_path="$zip_basename"
+        
+        if [ ${#extracted_items[@]} -eq 1 ] && [ -d "$temp_dir/${extracted_items[0]}" ] && [ "${extracted_items[0]}" = "$zip_basename" ]; then
+            echo "Detected single root folder with same name as zip - avoiding duplicate path"
+            # Upload contents of the inner folder directly
+            upload_source="$temp_dir/${extracted_items[0]}"
+            destination_path="$zip_basename"
+        fi
+        
         # Upload extracted files to blob storage
         echo "Uploading files to blob storage..."
         az storage blob upload-batch \
             --destination "$container" \
-            --source "$temp_dir" \
-            --destination-path "$zip_basename" \
+            --source "$upload_source" \
+            --destination-path "$destination_path" \
             --account-name "$storage_account"
         
         if [ $? -eq 0 ]; then
