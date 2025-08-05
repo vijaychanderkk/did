@@ -9,6 +9,9 @@ CONTAINER_NAME="your_container_name"
 ZIP_FOLDER_PATH="/path/to/your/zip/files/folder"
 TEMP_EXTRACT_DIR="/tmp/extracted_files"
 
+# Set SAS token (get from Azure portal or generate programmatically)
+export AZURE_STORAGE_SAS_TOKEN="your_sas_token_here"
+
 # Function to upload and extract zip file
 upload_and_extract_zip() {
     local zip_file=$1
