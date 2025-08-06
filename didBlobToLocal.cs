@@ -5,15 +5,28 @@ using Azure.Storage.Blobs;
 using Azure.Core;
 using System.Threading.Tasks;
 using System.Text;
+using System.Linq;
 
 namespace DeidPoC
 {
     internal class Program
     {
         private static string logFilePath;
+        private static BlobClient logBlobClient;
+        private static StringBuilder logBuffer = new StringBuilder();
 
         static async Task Main(string[] args)
         {
+            // Get max parallel jobs from user input
+            Console.WriteLine("Enter maximum number of parallel jobs (e.g., 5): ");
+            string maxParallelInput = Console.ReadLine();
+            int maxParallelJobs = 3; // Default value
+            
+            if (!string.IsNullOrWhiteSpace(maxParallelInput) && int.TryParse(maxParallelInput, out int parsedParallel))
+            {
+                maxParallelJobs = Math.Max(1, Math.Min(parsedParallel, 10)); // Limit between 1-10
+            }
+
             // Get folder range from user input
             Console.WriteLine("Enter folder range (e.g., 100-110): ");
             string folderRangeInput = Console.ReadLine();
@@ -25,154 +38,144 @@ namespace DeidPoC
                 return;
             }
 
-            // Get network drive path from user input
-            Console.WriteLine("Enter network drive path for output (e.g., \\\\server\\share\\output): ");
-            string networkDrivePath = Console.ReadLine();
-            
-            if (string.IsNullOrWhiteSpace(networkDrivePath))
-            {
-                Console.WriteLine("Network drive path cannot be empty.");
-                return;
-            }
-
-            // Ensure network drive path exists
-            if (!Directory.Exists(networkDrivePath))
-            {
-                Console.WriteLine($"Network drive path does not exist: {networkDrivePath}");
-                return;
-            }
-
             Uri storageAccountContainerUri = new("<<storageURL>>/deidlob");
             string serviceEndpoint = "<<serviceendpoint>>";
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            logFilePath = Path.Combine("C:\\temp\\", $"deid_log_{timestamp}.txt");
+            logFilePath = $"logs/deid_log_{timestamp}.txt";
 
             try
             {
+                // Initialize blob client for logging
+                var storageAccountUri = new Uri($"{storageAccountContainerUri.Scheme}://{storageAccountContainerUri.Host}");
+                BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
+                var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
+                logBlobClient = containerClient.GetBlobClient(logFilePath);
+
                 DeidentificationClient client = new(
                     new Uri(serviceEndpoint),
                     new AzureCliCredential(),
                     new DeidentificationClientOptions()
                 );
 
-                await LogMessage("--- DeID Process Started ---");
-                await LogMessage($"Log File: {logFilePath}");
+                await LogMessage("=== DeID Batch Process Started ===");
                 await LogMessage($"Processing folders: {startFolder} to {endFolder}");
-                await LogMessage($"Output will be saved to: {networkDrivePath}");
+                await LogMessage($"Maximum parallel jobs: {maxParallelJobs}");
 
-                // Process each folder in the range
-                for (int folderNum = startFolder; folderNum <= endFolder; folderNum++)
-                {
-                    string inputFolder = $"all_data/folder{folderNum}";
-                    string outputFolderName = $"folder{folderNum}-output";
-                    string networkOutputPath = Path.Combine(networkDrivePath, outputFolderName);
+                // Create list of folder numbers to process
+                var foldersToProcess = Enumerable.Range(startFolder, endFolder - startFolder + 1).ToList();
+                
+                // Process folders in parallel batches
+                await ProcessFoldersInParallel(client, foldersToProcess, maxParallelJobs, storageAccountContainerUri);
 
-                    await LogMessage($"\n--- Processing {inputFolder} ---");
-                    
-                    // Create output directory on network drive
-                    Directory.CreateDirectory(networkOutputPath);
-                    await LogMessage($"Created output directory: {networkOutputPath}");
-
-                    // Use simple output path similar to original
-                    string tempBlobOutputPath = $"{outputFolderName}/";
-                    
-                    var jobId = Guid.NewGuid().ToString().Substring(0, 25);
-                    await LogMessage($"Job ID: {jobId}");
-
-                    await LogMessage("Creating deidentification job...");
-                    DeidentificationJob job = new(
-                        new SourceStorageLocation(storageAccountContainerUri, inputFolder),
-                        new TargetStorageLocation(storageAccountContainerUri, tempBlobOutputPath)
-                    );
-
-                    await LogMessage($"Starting deidentification job for {inputFolder}...");
-
-                    // Start the job 
-                    var operation = await client.DeidentifyDocumentsAsync(
-                        WaitUntil.Started,
-                        jobId,
-                        job
-                    );
-
-                    await LogMessage($"Job creation request submitted. Polling for status...");
-
-                    // Poll for job completion with timeout
-                    var startTime = DateTime.Now;
-                    var maxWaitTime = TimeSpan.FromHours(1);
-                    var pollInterval = TimeSpan.FromSeconds(60);
-
-                    DeidentificationJob completedJob = null;
-                    bool jobCompleted = false;
-
-                    while (!jobCompleted && DateTime.Now - startTime < maxWaitTime)
-                    {
-                        try
-                        {
-                            // Get current job status
-                            var currentJob = await client.GetJobAsync(jobId);
-                            completedJob = currentJob.Value;
-
-                            await LogMessage($"Job status: {completedJob.Status} (Elapsed: {DateTime.Now - startTime:mm\\:ss})");
-
-                            if (completedJob.Status.ToString() == "Succeeded" ||
-                                completedJob.Status.ToString() == "Failed" ||
-                                completedJob.Status.ToString() == "Canceled")
-                            {
-                                jobCompleted = true;
-                                break;
-                            }
-
-                            // Wait before next poll
-                            await LogMessage($"Job still running... waiting {pollInterval.TotalSeconds} seconds before next check");
-                            await Task.Delay(pollInterval);
-                        }
-                        catch (Exception ex)
-                        {
-                            await LogMessage($"Error checking job status: {ex.Message}");
-                            await Task.Delay(pollInterval);
-                        }
-                    }
-
-                    if (!jobCompleted)
-                    {
-                        await LogMessage($"Job timed out after {maxWaitTime.TotalMinutes} minutes. Current status: {completedJob?.Status}");
-                        continue; // Continue with next folder
-                    }
-
-                    if (completedJob.Status.ToString() == "Succeeded")
-                    {
-                        await LogMessage($"Job completed successfully. Copying files to network drive...");
-                        
-                        // Copy files from blob storage to network drive
-                        await CopyBlobToNetworkDrive(storageAccountContainerUri, tempBlobOutputPath, networkOutputPath);
-                        
-                        await LogMessage($"Files copied to: {networkOutputPath}");
-                        
-                        // Optional: Clean up temporary blob storage
-                        await LogMessage($"Cleaning up temporary blob storage: {tempBlobOutputPath}");
-                        await CleanupTempBlobStorage(storageAccountContainerUri, tempBlobOutputPath);
-                    }
-                    else
-                    {
-                        await LogMessage($"Job failed with status: {completedJob.Status}");
-                        if (completedJob.Error != null)
-                        {
-                            await LogMessage($"Error Code: {completedJob.Error.Code}");
-                            await LogMessage($"Error Message: {completedJob.Error.Message}");
-                        }
-                    }
-
-                    await LogMessage($"--- Completed processing {inputFolder} ---\n");
-                }
-
-                await LogMessage("--- All DeID Processes Completed ---");
+                await LogMessage("=== All DeID Processes Completed ===");
+                
+                // Final log upload
+                await UploadLogToBlob();
             }
             catch (Exception ex)
             {
-                await LogMessage($"ERROR: {ex.Message}");
-                await LogMessage($"StackTrace: {ex.StackTrace}");
+                await LogMessage($"CRITICAL ERROR: {ex.Message}");
+                await UploadLogToBlob();
                 throw;
+            }
+        }
+
+        private static async Task ProcessFoldersInParallel(DeidentificationClient client, List<int> foldersToProcess, int maxParallelJobs, Uri storageAccountContainerUri)
+        {
+            var semaphore = new SemaphoreSlim(maxParallelJobs, maxParallelJobs);
+            var allTasks = new List<Task>();
+
+            foreach (int folderNum in foldersToProcess)
+            {
+                var task = ProcessSingleFolderAsync(client, folderNum, storageAccountContainerUri, semaphore);
+                allTasks.Add(task);
+            }
+
+            await LogMessage($"Started {allTasks.Count} parallel jobs");
+            await Task.WhenAll(allTasks);
+            await LogMessage("All parallel jobs completed");
+        }
+
+        private static async Task ProcessSingleFolderAsync(DeidentificationClient client, int folderNum, Uri storageAccountContainerUri, SemaphoreSlim semaphore)
+        {
+            await semaphore.WaitAsync();
+            
+            try
+            {
+                string inputFolder = $"all_data/folder{folderNum}";
+                string tempBlobOutputPath = $"folder{folderNum}-output/";
+                var jobId = Guid.NewGuid().ToString().Substring(0, 25);
+
+                await LogMessage($"Job {jobId}: {inputFolder} -> {tempBlobOutputPath}");
+
+                DeidentificationJob job = new(
+                    new SourceStorageLocation(storageAccountContainerUri, inputFolder),
+                    new TargetStorageLocation(storageAccountContainerUri, tempBlobOutputPath)
+                );
+
+                // Start the job 
+                var operation = await client.DeidentifyDocumentsAsync(
+                    WaitUntil.Started,
+                    jobId,
+                    job
+                );
+
+                // Poll for job completion with timeout
+                var startTime = DateTime.Now;
+                var maxWaitTime = TimeSpan.FromHours(2);
+                var pollInterval = TimeSpan.FromSeconds(30);
+
+                DeidentificationJob completedJob = null;
+                bool jobCompleted = false;
+
+                while (!jobCompleted && DateTime.Now - startTime < maxWaitTime)
+                {
+                    try
+                    {
+                        var currentJob = await client.GetJobAsync(jobId);
+                        completedJob = currentJob.Value;
+
+                        if (completedJob.Status.ToString() == "Succeeded" ||
+                            completedJob.Status.ToString() == "Failed" ||
+                            completedJob.Status.ToString() == "Canceled")
+                        {
+                            jobCompleted = true;
+                            break;
+                        }
+
+                        await Task.Delay(pollInterval);
+                    }
+                    catch (Exception ex)
+                    {
+                        await LogMessage($"Job {jobId} polling error: {ex.Message}");
+                        await Task.Delay(pollInterval);
+                    }
+                }
+
+                if (!jobCompleted)
+                {
+                    await LogMessage($"Job {jobId} TIMEOUT after {maxWaitTime.TotalMinutes}min - Status: {completedJob?.Status}");
+                    return;
+                }
+
+                if (completedJob.Status.ToString() == "Succeeded")
+                {
+                    await LogMessage($"Job {jobId} SUCCESS - Elapsed: {DateTime.Now - startTime:mm\\:ss}");
+                }
+                else
+                {
+                    string errorInfo = completedJob.Error != null ? $" - {completedJob.Error.Code}: {completedJob.Error.Message}" : "";
+                    await LogMessage($"Job {jobId} FAILED - Status: {completedJob.Status}{errorInfo}");
+                }
+            }
+            catch (Exception ex)
+            {
+                await LogMessage($"Folder{folderNum} EXCEPTION: {ex.Message}");
+            }
+            finally
+            {
+                semaphore.Release();
             }
         }
 
@@ -201,101 +204,43 @@ namespace DeidPoC
             }
         }
 
-        private static async Task CopyBlobToNetworkDrive(Uri containerUri, string blobPath, string networkPath)
-        {
-            try
-            {
-                // Create blob service client using the storage account base URL
-                var storageAccountUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
-                BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
-                var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
-
-                await LogMessage($"Listing blobs in container 'deidlob', path: {blobPath}");
-
-                // List all blobs in the output path
-                await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: blobPath))
-                {
-                    try
-                    {
-                        var blobClient = containerClient.GetBlobClient(blobItem.Name);
-                        
-                        // Create relative path for network drive
-                        string relativePath = blobItem.Name.Substring(blobPath.Length).TrimStart('/');
-                        string networkFilePath = Path.Combine(networkPath, relativePath);
-                        
-                        // Create directory structure if needed
-                        string networkFileDir = Path.GetDirectoryName(networkFilePath);
-                        if (!string.IsNullOrEmpty(networkFileDir))
-                        {
-                            Directory.CreateDirectory(networkFileDir);
-                        }
-
-                        await LogMessage($"Copying: {blobItem.Name} -> {networkFilePath}");
-
-                        // Download blob to network drive
-                        using (var fileStream = File.Create(networkFilePath))
-                        {
-                            await blobClient.DownloadToAsync(fileStream);
-                        }
-
-                        await LogMessage($"Successfully copied: {relativePath}");
-                    }
-                    catch (Exception ex)
-                    {
-                        await LogMessage($"Error copying blob {blobItem.Name}: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                await LogMessage($"Error in CopyBlobToNetworkDrive: {ex.Message}");
-                throw;
-            }
-        }
-
-        private static async Task CleanupTempBlobStorage(Uri containerUri, string blobPath)
-        {
-            try
-            {
-                // Create blob service client using the storage account base URL
-                var storageAccountUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
-                BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
-                var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
-
-                await LogMessage($"Cleaning up temporary blobs in container 'deidlob', path: {blobPath}");
-
-                // List and delete all blobs in the temp path
-                await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: blobPath))
-                {
-                    try
-                    {
-                        var blobClient = containerClient.GetBlobClient(blobItem.Name);
-                        await blobClient.DeleteIfExistsAsync();
-                        await LogMessage($"Deleted temporary blob: {blobItem.Name}");
-                    }
-                    catch (Exception ex)
-                    {
-                        await LogMessage($"Error deleting blob {blobItem.Name}: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                await LogMessage($"Error in CleanupTempBlobStorage: {ex.Message}");
-            }
-        }
-
         private static async Task LogMessage(string message)
         {
-            var timestampedMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - {message}";
+            var timestampedMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}";
             Console.WriteLine(timestampedMessage);
+            
+            lock (logBuffer)
+            {
+                logBuffer.AppendLine(timestampedMessage);
+            }
+
+            // Upload log periodically (every 10 messages) or on important events
+            if (logBuffer.Length > 1000 || message.Contains("SUCCESS") || message.Contains("FAILED") || message.Contains("==="))
+            {
+                await UploadLogToBlob();
+            }
+        }
+
+        private static async Task UploadLogToBlob()
+        {
             try
             {
-                await File.AppendAllTextAsync(logFilePath, timestampedMessage + Environment.NewLine);
+                string logContent;
+                lock (logBuffer)
+                {
+                    if (logBuffer.Length == 0) return;
+                    logContent = logBuffer.ToString();
+                    logBuffer.Clear();
+                }
+
+                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(logContent)))
+                {
+                    await logBlobClient.UploadAsync(stream, overwrite: true);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to write to log file: {ex.Message}");
+                Console.WriteLine($"Failed to upload log to blob: {ex.Message}");
             }
         }
     }
