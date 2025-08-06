@@ -74,10 +74,10 @@ namespace DeidPoC
                     Directory.CreateDirectory(networkOutputPath);
                     await LogMessage($"Created output directory: {networkOutputPath}");
 
-                    // Create temporary blob storage location for Azure service output
-                    string tempBlobOutputPath = $"temp-output/{outputFolderName}";
+                    // Use simple output path similar to original
+                    string tempBlobOutputPath = $"{outputFolderName}/";
                     
-                    var jobId = Guid.NewGuid().ToString().Substring(0, 25) + "-" + inputFolder;
+                    var jobId = Guid.NewGuid().ToString().Substring(0, 25);
                     await LogMessage($"Job ID: {jobId}");
 
                     await LogMessage("Creating deidentification job...");
@@ -200,9 +200,28 @@ namespace DeidPoC
         {
             try
             {
-                // Create blob service client
-                BlobServiceClient blobServiceClient = new(containerUri, new AzureCliCredential());
-                var containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
+                // Extract container name from URI more safely
+                string containerName = containerUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+                if (string.IsNullOrEmpty(containerName))
+                {
+                    await LogMessage("Warning: Could not determine container name, using default connection");
+                }
+
+                // Create blob service client - use the base URI without container path
+                var baseUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
+                BlobServiceClient blobServiceClient = new(baseUri, new AzureCliCredential());
+                
+                // Get container client using the extracted container name or from URI
+                BlobContainerClient containerClient;
+                if (!string.IsNullOrEmpty(containerName))
+                {
+                    containerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                }
+                else
+                {
+                    // Fallback to original method
+                    containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
+                }
 
                 await LogMessage($"Listing blobs in: {blobPath}");
 
@@ -251,9 +270,23 @@ namespace DeidPoC
         {
             try
             {
-                // Create blob service client
-                BlobServiceClient blobServiceClient = new(containerUri, new AzureCliCredential());
-                var containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
+                // Extract container name from URI more safely
+                string containerName = containerUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+                
+                // Create blob service client - use the base URI without container path
+                var baseUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
+                BlobServiceClient blobServiceClient = new(baseUri, new AzureCliCredential());
+                
+                // Get container client
+                BlobContainerClient containerClient;
+                if (!string.IsNullOrEmpty(containerName))
+                {
+                    containerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                }
+                else
+                {
+                    containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
+                }
 
                 await LogMessage($"Cleaning up temporary blobs in: {blobPath}");
 
