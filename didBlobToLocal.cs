@@ -12,8 +12,11 @@ namespace DeidPoC
     internal class Program
     {
         private static string logFilePath;
+        private static string trackingLogPath;
         private static BlobClient logBlobClient;
+        private static BlobClient trackingBlobClient;
         private static StringBuilder logBuffer = new StringBuilder();
+        private static StringBuilder trackingBuffer = new StringBuilder();
 
         static async Task Main(string[] args)
         {
@@ -43,14 +46,16 @@ namespace DeidPoC
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             logFilePath = $"logs/deid_log_{timestamp}.txt";
+            trackingLogPath = $"logs/job_tracking_{timestamp}.txt";
 
             try
             {
-                // Initialize blob client for logging
+                // Initialize blob clients for logging
                 var storageAccountUri = new Uri($"{storageAccountContainerUri.Scheme}://{storageAccountContainerUri.Host}");
                 BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
                 var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
                 logBlobClient = containerClient.GetBlobClient(logFilePath);
+                trackingBlobClient = containerClient.GetBlobClient(trackingLogPath);
 
                 DeidentificationClient client = new(
                     new Uri(serviceEndpoint),
@@ -70,14 +75,28 @@ namespace DeidPoC
 
                 await LogMessage("=== All Jobs Submitted - Application Exiting ===");
                 await LogMessage($"Monitor job status via Azure portal or create a separate monitoring application");
-                await LogMessage($"Output locations: folder{{number}}-output/ in deidlob container");
                 
-                // Final log upload
+                // Log output locations for each folder
+                for (int folderNum = startFolder; folderNum <= endFolder; folderNum++)
+                {
+                    await LogMessage($"folder{folderNum} output location: folder{folderNum}-output/");
+                }
+                
+                // Force final log uploads with multiple retries
                 await UploadLogToBlob();
+                await UploadTrackingToBlob();
+                await Task.Delay(1000);
+                await UploadLogToBlob(); // Retry to ensure upload
+                await UploadTrackingToBlob(); // Retry to ensure upload
                 
                 Console.WriteLine("\nAll jobs have been submitted successfully!");
                 Console.WriteLine("You can now close this console window.");
-                Console.WriteLine($"Check the log file: logs/deid_log_{timestamp}.txt in blob storage for job IDs.");
+                Console.WriteLine($"Check these log files in blob storage:");
+                Console.WriteLine($"- Main log: logs/deid_log_{timestamp}.txt");
+                Console.WriteLine($"- Job tracking: logs/job_tracking_{timestamp}.txt (CSV format)");
+                
+                // Wait a moment to ensure all logs are written
+                await Task.Delay(3000);
             }
             catch (Exception ex)
             {
@@ -126,10 +145,14 @@ namespace DeidPoC
                 );
 
                 await LogMessage($"Job {jobId} STARTED: {inputFolder} -> {tempBlobOutputPath}");
+                
+                // Create tracking entry for easy job-to-folder mapping
+                await LogTrackingInfo($"folder{folderNum},{jobId},{inputFolder},{tempBlobOutputPath},STARTED,{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
             }
             catch (Exception ex)
             {
                 await LogMessage($"Folder{folderNum} FAILED TO START: {ex.Message}");
+                await LogTrackingInfo($"folder{folderNum},ERROR,,,FAILED_TO_START,{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
             }
             finally
             {
@@ -172,11 +195,22 @@ namespace DeidPoC
                 logBuffer.AppendLine(timestampedMessage);
             }
 
-            // Upload log more frequently in fire-and-forget mode
-            if (logBuffer.Length > 500 || message.Contains("STARTED") || message.Contains("FAILED TO START") || message.Contains("==="))
+            // Upload log immediately for all important messages in fire-and-forget mode
+            if (message.Contains("STARTED") || message.Contains("TRACKING") || message.Contains("FAILED TO START") || message.Contains("===") || message.Contains("Processing folders"))
             {
                 await UploadLogToBlob();
             }
+        }
+
+        private static async Task LogTrackingInfo(string trackingData)
+        {
+            lock (trackingBuffer)
+            {
+                trackingBuffer.AppendLine(trackingData);
+            }
+            
+            // Upload tracking data immediately
+            await UploadTrackingToBlob();
         }
 
         private static async Task UploadLogToBlob()
@@ -199,6 +233,33 @@ namespace DeidPoC
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to upload log to blob: {ex.Message}");
+            }
+        }
+
+        private static async Task UploadTrackingToBlob()
+        {
+            try
+            {
+                string trackingContent;
+                lock (trackingBuffer)
+                {
+                    if (trackingBuffer.Length == 0)
+                    {
+                        // Create header if this is the first upload
+                        trackingBuffer.AppendLine("FolderName,JobId,SourcePath,OutputPath,Status,Timestamp");
+                    }
+                    trackingContent = trackingBuffer.ToString();
+                    trackingBuffer.Clear();
+                }
+
+                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(trackingContent)))
+                {
+                    await trackingBlobClient.UploadAsync(stream, overwrite: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to upload tracking log to blob: {ex.Message}");
             }
         }
     }
