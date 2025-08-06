@@ -42,7 +42,7 @@ namespace DeidPoC
                 return;
             }
 
-            Uri storageAccountContainerUri = new("<<storageURL>>");
+            Uri storageAccountContainerUri = new("<<storageURL>>/deidlob");
             string serviceEndpoint = "<<serviceendpoint>>";
 
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -64,7 +64,7 @@ namespace DeidPoC
                 // Process each folder in the range
                 for (int folderNum = startFolder; folderNum <= endFolder; folderNum++)
                 {
-                    string inputFolder = $"folder{folderNum}";
+                    string inputFolder = $"all_data/folder{folderNum}";
                     string outputFolderName = $"folder{folderNum}-output";
                     string networkOutputPath = Path.Combine(networkDrivePath, outputFolderName);
 
@@ -156,6 +156,11 @@ namespace DeidPoC
                     else
                     {
                         await LogMessage($"Job failed with status: {completedJob.Status}");
+                        if (completedJob.Error != null)
+                        {
+                            await LogMessage($"Error Code: {completedJob.Error.Code}");
+                            await LogMessage($"Error Message: {completedJob.Error.Message}");
+                        }
                     }
 
                     await LogMessage($"--- Completed processing {inputFolder} ---\n");
@@ -200,30 +205,12 @@ namespace DeidPoC
         {
             try
             {
-                // Extract container name from URI more safely
-                string containerName = containerUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-                if (string.IsNullOrEmpty(containerName))
-                {
-                    await LogMessage("Warning: Could not determine container name, using default connection");
-                }
+                // Create blob service client using the storage account base URL
+                var storageAccountUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
+                BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
+                var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
 
-                // Create blob service client - use the base URI without container path
-                var baseUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
-                BlobServiceClient blobServiceClient = new(baseUri, new AzureCliCredential());
-                
-                // Get container client using the extracted container name or from URI
-                BlobContainerClient containerClient;
-                if (!string.IsNullOrEmpty(containerName))
-                {
-                    containerClient = blobServiceClient.GetBlobContainerClient(containerName);
-                }
-                else
-                {
-                    // Fallback to original method
-                    containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
-                }
-
-                await LogMessage($"Listing blobs in: {blobPath}");
+                await LogMessage($"Listing blobs in container 'deidlob', path: {blobPath}");
 
                 // List all blobs in the output path
                 await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: blobPath))
@@ -270,25 +257,12 @@ namespace DeidPoC
         {
             try
             {
-                // Extract container name from URI more safely
-                string containerName = containerUri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-                
-                // Create blob service client - use the base URI without container path
-                var baseUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
-                BlobServiceClient blobServiceClient = new(baseUri, new AzureCliCredential());
-                
-                // Get container client
-                BlobContainerClient containerClient;
-                if (!string.IsNullOrEmpty(containerName))
-                {
-                    containerClient = blobServiceClient.GetBlobContainerClient(containerName);
-                }
-                else
-                {
-                    containerClient = blobServiceClient.GetBlobContainerClient(containerUri.Segments.Last().TrimEnd('/'));
-                }
+                // Create blob service client using the storage account base URL
+                var storageAccountUri = new Uri($"{containerUri.Scheme}://{containerUri.Host}");
+                BlobServiceClient blobServiceClient = new(storageAccountUri, new AzureCliCredential());
+                var containerClient = blobServiceClient.GetBlobContainerClient("deidlob");
 
-                await LogMessage($"Cleaning up temporary blobs in: {blobPath}");
+                await LogMessage($"Cleaning up temporary blobs in container 'deidlob', path: {blobPath}");
 
                 // List and delete all blobs in the temp path
                 await foreach (var blobItem in containerClient.GetBlobsAsync(prefix: blobPath))
