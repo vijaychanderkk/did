@@ -65,13 +65,19 @@ namespace DeidPoC
                 // Create list of folder numbers to process
                 var foldersToProcess = Enumerable.Range(startFolder, endFolder - startFolder + 1).ToList();
                 
-                // Process folders in parallel batches
+                // Process folders in fire-and-forget mode
                 await ProcessFoldersInParallel(client, foldersToProcess, maxParallelJobs, storageAccountContainerUri);
 
-                await LogMessage("=== All DeID Processes Completed ===");
+                await LogMessage("=== All Jobs Submitted - Application Exiting ===");
+                await LogMessage($"Monitor job status via Azure portal or create a separate monitoring application");
+                await LogMessage($"Output locations: folder{{number}}-output/ in deidlob container");
                 
                 // Final log upload
                 await UploadLogToBlob();
+                
+                Console.WriteLine("\nAll jobs have been submitted successfully!");
+                Console.WriteLine("You can now close this console window.");
+                Console.WriteLine($"Check the log file: logs/deid_log_{timestamp}.txt in blob storage for job IDs.");
             }
             catch (Exception ex)
             {
@@ -88,16 +94,16 @@ namespace DeidPoC
 
             foreach (int folderNum in foldersToProcess)
             {
-                var task = ProcessSingleFolderAsync(client, folderNum, storageAccountContainerUri, semaphore);
+                var task = StartJobForFolderAsync(client, folderNum, storageAccountContainerUri, semaphore);
                 allTasks.Add(task);
             }
 
-            await LogMessage($"Started {allTasks.Count} parallel jobs");
+            await LogMessage($"Starting {allTasks.Count} jobs in parallel...");
             await Task.WhenAll(allTasks);
-            await LogMessage("All parallel jobs completed");
+            await LogMessage("All jobs have been submitted successfully");
         }
 
-        private static async Task ProcessSingleFolderAsync(DeidentificationClient client, int folderNum, Uri storageAccountContainerUri, SemaphoreSlim semaphore)
+        private static async Task StartJobForFolderAsync(DeidentificationClient client, int folderNum, Uri storageAccountContainerUri, SemaphoreSlim semaphore)
         {
             await semaphore.WaitAsync();
             
@@ -107,71 +113,23 @@ namespace DeidPoC
                 string tempBlobOutputPath = $"folder{folderNum}-output/";
                 var jobId = Guid.NewGuid().ToString().Substring(0, 25);
 
-                await LogMessage($"Job {jobId}: {inputFolder} -> {tempBlobOutputPath}");
-
                 DeidentificationJob job = new(
                     new SourceStorageLocation(storageAccountContainerUri, inputFolder),
                     new TargetStorageLocation(storageAccountContainerUri, tempBlobOutputPath)
                 );
 
-                // Start the job 
+                // Start the job (fire-and-forget)
                 var operation = await client.DeidentifyDocumentsAsync(
                     WaitUntil.Started,
                     jobId,
                     job
                 );
 
-                // Poll for job completion with timeout
-                var startTime = DateTime.Now;
-                var maxWaitTime = TimeSpan.FromHours(2);
-                var pollInterval = TimeSpan.FromSeconds(30);
-
-                DeidentificationJob completedJob = null;
-                bool jobCompleted = false;
-
-                while (!jobCompleted && DateTime.Now - startTime < maxWaitTime)
-                {
-                    try
-                    {
-                        var currentJob = await client.GetJobAsync(jobId);
-                        completedJob = currentJob.Value;
-
-                        if (completedJob.Status.ToString() == "Succeeded" ||
-                            completedJob.Status.ToString() == "Failed" ||
-                            completedJob.Status.ToString() == "Canceled")
-                        {
-                            jobCompleted = true;
-                            break;
-                        }
-
-                        await Task.Delay(pollInterval);
-                    }
-                    catch (Exception ex)
-                    {
-                        await LogMessage($"Job {jobId} polling error: {ex.Message}");
-                        await Task.Delay(pollInterval);
-                    }
-                }
-
-                if (!jobCompleted)
-                {
-                    await LogMessage($"Job {jobId} TIMEOUT after {maxWaitTime.TotalMinutes}min - Status: {completedJob?.Status}");
-                    return;
-                }
-
-                if (completedJob.Status.ToString() == "Succeeded")
-                {
-                    await LogMessage($"Job {jobId} SUCCESS - Elapsed: {DateTime.Now - startTime:mm\\:ss}");
-                }
-                else
-                {
-                    string errorInfo = completedJob.Error != null ? $" - {completedJob.Error.Code}: {completedJob.Error.Message}" : "";
-                    await LogMessage($"Job {jobId} FAILED - Status: {completedJob.Status}{errorInfo}");
-                }
+                await LogMessage($"Job {jobId} STARTED: {inputFolder} -> {tempBlobOutputPath}");
             }
             catch (Exception ex)
             {
-                await LogMessage($"Folder{folderNum} EXCEPTION: {ex.Message}");
+                await LogMessage($"Folder{folderNum} FAILED TO START: {ex.Message}");
             }
             finally
             {
@@ -214,8 +172,8 @@ namespace DeidPoC
                 logBuffer.AppendLine(timestampedMessage);
             }
 
-            // Upload log periodically (every 10 messages) or on important events
-            if (logBuffer.Length > 1000 || message.Contains("SUCCESS") || message.Contains("FAILED") || message.Contains("==="))
+            // Upload log more frequently in fire-and-forget mode
+            if (logBuffer.Length > 500 || message.Contains("STARTED") || message.Contains("FAILED TO START") || message.Contains("==="))
             {
                 await UploadLogToBlob();
             }
