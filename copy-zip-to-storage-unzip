@@ -1,7 +1,11 @@
 #!/bin/bash
-
-# Azure CLI script to upload and extract ALL zip files from a folder to blob storage
+# Azure CLI script to upload and extract zip files from a folder to blob storage
 # Running from Azure compute instance - uses managed identity authentication
+# Usage: ./script.sh [folder_range]
+# Examples: 
+#   ./script.sh           # Process all zip files
+#   ./script.sh 100-102   # Process folder100.zip, folder101.zip, folder102.zip
+#   ./script.sh 50        # Process only folder50.zip
 
 # Configuration
 STORAGE_ACCOUNT="your_storage_account_name"
@@ -11,6 +15,53 @@ TEMP_EXTRACT_DIR="/tmp/extracted_files"
 
 # Set SAS token (get from Azure portal or generate programmatically)
 export AZURE_STORAGE_SAS_TOKEN="your_sas_token_here"
+
+# Parse folder range parameter
+FOLDER_RANGE=""
+if [ $# -gt 0 ]; then
+    FOLDER_RANGE="$1"
+    echo "Processing folder range: $FOLDER_RANGE"
+fi
+
+# Function to check if a zip file matches the folder range criteria
+matches_folder_range() {
+    local zip_file=$1
+    local filename=$(basename "$zip_file" .zip)
+    
+    # If no range specified, process all files
+    if [ -z "$FOLDER_RANGE" ]; then
+        return 0
+    fi
+    
+    # Extract number from filename (assuming format like "folder123.zip")
+    local folder_num=$(echo "$filename" | grep -o '[0-9]\+$')
+    
+    # If no number found in filename, skip this file
+    if [ -z "$folder_num" ]; then
+        return 1
+    fi
+    
+    # Parse range
+    if [[ "$FOLDER_RANGE" == *"-"* ]]; then
+        # Range format: "100-102"
+        local start_num=$(echo "$FOLDER_RANGE" | cut -d'-' -f1)
+        local end_num=$(echo "$FOLDER_RANGE" | cut -d'-' -f2)
+        
+        # Check if folder number is within range
+        if [ "$folder_num" -ge "$start_num" ] && [ "$folder_num" -le "$end_num" ]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        # Single number format: "100"
+        if [ "$folder_num" -eq "$FOLDER_RANGE" ]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
 
 # Function to upload and extract zip file
 upload_and_extract_zip() {
@@ -77,26 +128,44 @@ az storage container create \
     --name "$CONTAINER_NAME" \
     --account-name "$STORAGE_ACCOUNT"
 
-# Count zip files
-zip_count=$(find "$ZIP_FOLDER_PATH" -maxdepth 1 -name "*.zip" | wc -l)
-echo "Found $zip_count zip files to process"
-
-if [ $zip_count -eq 0 ]; then
-    echo "No zip files found in: $ZIP_FOLDER_PATH"
-    exit 1
-fi
-
 # Create main temp directory
 mkdir -p "$TEMP_EXTRACT_DIR"
 
-# Process all zip files in the specified folder
+# Count and collect matching zip files
+matching_files=()
 for zip_file in "$ZIP_FOLDER_PATH"/*.zip; do
-    if [ -f "$zip_file" ]; then
-        upload_and_extract_zip "$zip_file" "$CONTAINER_NAME" "$STORAGE_ACCOUNT"
+    if [ -f "$zip_file" ] && matches_folder_range "$zip_file"; then
+        matching_files+=("$zip_file")
     fi
+done
+
+zip_count=${#matching_files[@]}
+
+if [ -z "$FOLDER_RANGE" ]; then
+    echo "Found $zip_count zip files to process (all files)"
+else
+    echo "Found $zip_count zip files matching range '$FOLDER_RANGE'"
+fi
+
+if [ $zip_count -eq 0 ]; then
+    if [ -z "$FOLDER_RANGE" ]; then
+        echo "No zip files found in: $ZIP_FOLDER_PATH"
+    else
+        echo "No zip files found matching range '$FOLDER_RANGE' in: $ZIP_FOLDER_PATH"
+    fi
+    exit 1
+fi
+
+# Process matching zip files
+for zip_file in "${matching_files[@]}"; do
+    upload_and_extract_zip "$zip_file" "$CONTAINER_NAME" "$STORAGE_ACCOUNT"
 done
 
 # Clean up main temp directory
 rm -rf "$TEMP_EXTRACT_DIR"
 
-echo "Script completed successfully - processed $zip_count zip files"
+if [ -z "$FOLDER_RANGE" ]; then
+    echo "Script completed successfully - processed $zip_count zip files"
+else
+    echo "Script completed successfully - processed $zip_count zip files matching range '$FOLDER_RANGE'"
+fi
