@@ -1,0 +1,23 @@
+#!/bin/bash
+marker=""
+count=0
+while true; do
+    if [ -z "$marker" ]; then
+        result=$(az storage blob list --account-name <storage_account_name> --container-name <container_name> --prefix "all_data/" --output json)
+    else
+        result=$(az storage blob list --account-name <storage_account_name> --container-name <container_name> --prefix "all_data/" --marker "$marker" --output json)
+    fi
+    
+    # Count files with "truth" in this batch
+    batch_count=$(echo "$result" | grep -o '"name":[^,]*truth[^,]*' | wc -l)
+    count=$((count + batch_count))
+    
+    # Get next marker
+    marker=$(echo "$result" | grep -o '"nextMarker":"[^"]*"' | cut -d'"' -f4)
+    
+    if [ -z "$marker" ] || [ "$marker" = "null" ]; then
+        break
+    fi
+done
+
+echo "Total files with 'truth': $count"
